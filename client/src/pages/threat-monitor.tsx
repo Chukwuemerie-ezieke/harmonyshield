@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import type { Threat } from "@shared/schema";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -36,6 +36,9 @@ import {
   ShieldCheck,
   CheckCircle2,
   XCircle,
+  Radio,
+  Loader2,
+  ExternalLink,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import {
@@ -181,10 +184,11 @@ function StatCard({
   );
 }
 
-function ThreatCard({ threat }: { threat: Threat }) {
+function ThreatCard({ threat }: { threat: any }) {
   const severityCfg = SEVERITY_CONFIG[threat.severity] || SEVERITY_CONFIG.low;
   const sourceCfg = SOURCE_CONFIG[threat.source] || SOURCE_CONFIG.news;
   const TypeIcon = TYPE_ICONS[threat.type] || Shield;
+  const isLive = threat.isLive;
 
   return (
     <Card
@@ -203,15 +207,26 @@ function ThreatCard({ threat }: { threat: Threat }) {
               {threat.title}
             </h3>
           </div>
-          {threat.isEducationSector === 1 && (
-            <Badge
-              variant="outline"
-              className="shrink-0 text-emerald-700 border-emerald-300 dark:text-emerald-400 dark:border-emerald-700"
-            >
-              <GraduationCap className="h-3 w-3 mr-1" />
-              Edu
-            </Badge>
-          )}
+          <div className="flex gap-1 shrink-0">
+            {isLive && (
+              <Badge
+                variant="secondary"
+                className="bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-400 text-[10px] px-1.5 py-0"
+              >
+                <Radio className="h-2.5 w-2.5 mr-0.5 animate-pulse" />
+                LIVE
+              </Badge>
+            )}
+            {threat.isEducationSector === 1 && (
+              <Badge
+                variant="outline"
+                className="text-emerald-700 border-emerald-300 dark:text-emerald-400 dark:border-emerald-700"
+              >
+                <GraduationCap className="h-3 w-3 mr-1" />
+                Edu
+              </Badge>
+            )}
+          </div>
         </div>
 
         {threat.description && (
@@ -240,12 +255,19 @@ function ThreatCard({ threat }: { threat: Threat }) {
 
         <div className="flex items-center justify-between text-[11px] text-muted-foreground">
           <span>{getRelativeTime(threat.publishedAt)}</span>
-          {threat.country && (
-            <span className="flex items-center gap-1">
-              <Globe className="h-3 w-3" />
-              {COUNTRY_FLAGS[threat.country] || ""} {threat.country}
-            </span>
-          )}
+          <div className="flex items-center gap-2">
+            {threat.country && (
+              <span className="flex items-center gap-1">
+                <Globe className="h-3 w-3" />
+                {COUNTRY_FLAGS[threat.country] || ""} {threat.country}
+              </span>
+            )}
+            {threat.url && (
+              <a href={threat.url} target="_blank" rel="noopener noreferrer" className="text-emerald-600 hover:text-emerald-500">
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            )}
+          </div>
         </div>
       </CardContent>
     </Card>
@@ -312,25 +334,26 @@ function ThreatTypeChart({ byType }: { byType: Record<string, number> }) {
 function IPCheckerSection() {
   const [ipInput, setIpInput] = useState("");
   const [showResult, setShowResult] = useState(false);
-  const [checkedIp, setCheckedIp] = useState("");
+  const [ipResult, setIpResult] = useState<any>(null);
+
+  const ipCheckMutation = useMutation({
+    mutationFn: async (ip: string) => {
+      const res = await apiRequest("GET", `/api/ip-check/${encodeURIComponent(ip)}`);
+      return res.json();
+    },
+    onSuccess: (data) => {
+      setIpResult(data);
+      setShowResult(true);
+    },
+  });
 
   const handleCheck = () => {
     if (!ipInput.trim()) return;
-    setCheckedIp(ipInput.trim());
-    setShowResult(true);
+    ipCheckMutation.mutate(ipInput.trim());
   };
 
-  // Generate deterministic mock result based on IP
-  const isMalicious = checkedIp.startsWith("192.168")
-    ? false
-    : checkedIp.split(".").reduce((a, b) => a + parseInt(b || "0"), 0) % 3 ===
-      0;
-  const confidenceScore = isMalicious
-    ? 72 + ((checkedIp.length * 7) % 28)
-    : 5 + ((checkedIp.length * 3) % 15);
-  const abuseReports = isMalicious
-    ? 12 + ((checkedIp.length * 2) % 40)
-    : 0;
+  const isMalicious = ipResult?.abuseConfidenceScore != null ? ipResult.abuseConfidenceScore > 50 : false;
+  const isLiveResult = ipResult?.isLive === true;
 
   return (
     <>
@@ -339,12 +362,16 @@ function IPCheckerSection() {
           <CardTitle className="text-sm font-semibold flex items-center gap-2">
             <Search className="h-4 w-4" />
             IP Reputation Checker
+            {isLiveResult && (
+              <Badge variant="secondary" className="bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-400 text-[10px] px-1.5 py-0">
+                <Radio className="h-2.5 w-2.5 mr-0.5 animate-pulse" /> AbuseIPDB
+              </Badge>
+            )}
           </CardTitle>
         </CardHeader>
         <CardContent>
           <p className="text-xs text-muted-foreground mb-3">
-            Check if a suspicious IP address has been reported for malicious
-            activity.
+            Check any IP address against the AbuseIPDB crowdsourced reputation database.
           </p>
           <div className="flex gap-2">
             <Input
@@ -358,12 +385,19 @@ function IPCheckerSection() {
             <Button
               size="sm"
               onClick={handleCheck}
-              disabled={!ipInput.trim()}
+              disabled={!ipInput.trim() || ipCheckMutation.isPending}
               data-testid="button-check-ip"
             >
-              Check
+              {ipCheckMutation.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : "Check"}
             </Button>
           </div>
+          {ipResult?.message && (
+            <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-2">
+              {ipResult.message}
+            </p>
+          )}
         </CardContent>
       </Card>
 
@@ -377,59 +411,68 @@ function IPCheckerSection() {
                 <CheckCircle2 className="h-5 w-5 text-emerald-500" />
               )}
               IP Reputation Report
+              {isLiveResult && (
+                <Badge variant="secondary" className="bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-400 text-[10px] px-1.5 py-0 ml-auto">
+                  <Radio className="h-2.5 w-2.5 mr-0.5 animate-pulse" /> LIVE
+                </Badge>
+              )}
             </DialogTitle>
             <DialogDescription>
               Results for{" "}
               <code className="font-mono text-sm bg-muted px-1 rounded">
-                {checkedIp}
+                {ipResult?.ipAddress}
               </code>
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3 pt-2">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="bg-muted rounded-lg p-3">
-                <p className="text-[11px] text-muted-foreground">Status</p>
-                <p
-                  className={`text-sm font-semibold ${isMalicious ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400"}`}
-                >
-                  {isMalicious ? "Malicious" : "Clean"}
-                </p>
+          {ipResult && (
+            <div className="space-y-3 pt-2">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-muted rounded-lg p-3">
+                  <p className="text-[11px] text-muted-foreground">Status</p>
+                  <p className={`text-sm font-semibold ${isMalicious ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+                    {isMalicious ? "Malicious" : "Clean"}
+                  </p>
+                </div>
+                <div className="bg-muted rounded-lg p-3">
+                  <p className="text-[11px] text-muted-foreground">Abuse Confidence</p>
+                  <p className="text-sm font-semibold">
+                    {ipResult.abuseConfidenceScore != null ? `${ipResult.abuseConfidenceScore}%` : "N/A"}
+                  </p>
+                </div>
+                <div className="bg-muted rounded-lg p-3">
+                  <p className="text-[11px] text-muted-foreground">Total Reports</p>
+                  <p className="text-sm font-semibold">{ipResult.totalReports ?? 0}</p>
+                </div>
+                <div className="bg-muted rounded-lg p-3">
+                  <p className="text-[11px] text-muted-foreground">Country</p>
+                  <p className="text-sm font-semibold">
+                    {COUNTRY_FLAGS[ipResult.countryCode] || ""} {ipResult.countryCode || "N/A"}
+                  </p>
+                </div>
+                {ipResult.isp && ipResult.isp !== "N/A" && (
+                  <div className="bg-muted rounded-lg p-3 col-span-2">
+                    <p className="text-[11px] text-muted-foreground">ISP / Provider</p>
+                    <p className="text-sm font-semibold">{ipResult.isp}</p>
+                  </div>
+                )}
               </div>
-              <div className="bg-muted rounded-lg p-3">
-                <p className="text-[11px] text-muted-foreground">
-                  Confidence Score
-                </p>
-                <p className="text-sm font-semibold">{confidenceScore}%</p>
-              </div>
-              <div className="bg-muted rounded-lg p-3">
-                <p className="text-[11px] text-muted-foreground">
-                  Abuse Reports
-                </p>
-                <p className="text-sm font-semibold">{abuseReports}</p>
-              </div>
-              <div className="bg-muted rounded-lg p-3">
-                <p className="text-[11px] text-muted-foreground">Country</p>
-                <p className="text-sm font-semibold">
-                  {isMalicious ? "🇷🇺 Russia" : "🇳🇬 Nigeria"}
-                </p>
-              </div>
+              {isMalicious && (
+                <div className="bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 rounded-lg p-3">
+                  <p className="text-xs text-red-700 dark:text-red-400 font-medium">
+                    ⚠ This IP has been associated with malicious activity. Consider
+                    blocking it in your firewall and reviewing access logs.
+                  </p>
+                </div>
+              )}
+              {!isMalicious && ipResult.abuseConfidenceScore != null && (
+                <div className="bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 rounded-lg p-3">
+                  <p className="text-xs text-emerald-700 dark:text-emerald-400 font-medium">
+                    ✓ This IP appears clean with no significant abuse reports.
+                  </p>
+                </div>
+              )}
             </div>
-            {isMalicious && (
-              <div className="bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 rounded-lg p-3">
-                <p className="text-xs text-red-700 dark:text-red-400 font-medium">
-                  ⚠ This IP has been associated with malicious activity. Consider
-                  blocking it in your firewall and reviewing access logs.
-                </p>
-              </div>
-            )}
-            {!isMalicious && (
-              <div className="bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 rounded-lg p-3">
-                <p className="text-xs text-emerald-700 dark:text-emerald-400 font-medium">
-                  ✓ This IP appears clean with no significant abuse reports.
-                </p>
-              </div>
-            )}
-          </div>
+          )}
         </DialogContent>
       </Dialog>
     </>
@@ -442,7 +485,7 @@ export default function ThreatMonitor() {
   const [severityFilter, setSeverityFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
 
-  const { data: threats, isLoading: threatsLoading } = useQuery<Threat[]>({
+  const { data: threats, isLoading: threatsLoading } = useQuery<any[]>({
     queryKey: ["/api/threats"],
   });
 
@@ -463,14 +506,22 @@ export default function ThreatMonitor() {
   return (
     <div className="p-4 md:p-6 space-y-6 max-w-7xl mx-auto">
       {/* Page header */}
-      <div>
-        <h1 className="text-xl font-bold flex items-center gap-2">
-          <Shield className="h-5 w-5 text-emerald-600" />
-          Threat Monitor
-        </h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Real-time cybersecurity threat intelligence for education sector
-        </p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-xl font-bold flex items-center gap-2">
+            <Shield className="h-5 w-5 text-emerald-600" />
+            Threat Monitor
+          </h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Real-time cybersecurity threat intelligence for education sector
+          </p>
+        </div>
+        {threats && threats.some((t: any) => t.isLive) && (
+          <Badge variant="secondary" className="bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-400 text-xs px-2 py-1">
+            <Radio className="h-3 w-3 mr-1 animate-pulse" />
+            Live feeds active
+          </Badge>
+        )}
       </div>
 
       {/* Stats bar */}

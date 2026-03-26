@@ -7,6 +7,7 @@ import {
   insertIncidentSchema, insertComplianceItemSchema, insertIncidentActionSchema
 } from "@shared/schema";
 import { eq } from "drizzle-orm";
+import { fetchOTXThreats, fetchLiveNews, checkIPReputation, getFeedStatus } from "./live-feeds";
 
 function seedDatabase() {
   // Check if already seeded
@@ -284,14 +285,67 @@ export function registerRoutes(server: Server, app: Express) {
     res.json(updated);
   });
 
-  // Threats
-  app.get("/api/threats", (req, res) => {
+  // Threats — Live from AlienVault OTX + seed data fallback
+  app.get("/api/threats", async (req, res) => {
     const limit = req.query.limit ? parseInt(req.query.limit as string) : 50;
-    res.json(storage.getThreats(limit));
+    try {
+      const otxKey = process.env.ALIENVAULT_OTX_API_KEY;
+      const liveThreats = await fetchOTXThreats(otxKey);
+      if (liveThreats.length > 0) {
+        // Return live threats, supplemented with seed data
+        const seedThreats = storage.getThreats(limit).map((t: any) => ({ ...t, isLive: false }));
+        const combined = [...liveThreats, ...seedThreats].slice(0, limit);
+        res.json(combined);
+        return;
+      }
+    } catch (err) {
+      console.error("Live threat fetch failed, falling back to seed data:", err);
+    }
+    // Fallback to seed data
+    res.json(storage.getThreats(limit).map((t: any) => ({ ...t, isLive: false })));
   });
 
   app.get("/api/threats/stats", (_req, res) => {
     res.json(storage.getThreatStats());
+  });
+
+  // IP Reputation Check — Live from AbuseIPDB
+  app.get("/api/ip-check/:ip", async (req, res) => {
+    const ip = req.params.ip;
+    // Validate IP format
+    const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
+    if (!ipRegex.test(ip)) {
+      res.status(400).json({ error: "Invalid IP address format" });
+      return;
+    }
+    const apiKey = process.env.ABUSEIPDB_API_KEY;
+    if (!apiKey) {
+      res.json({
+        ipAddress: ip,
+        abuseConfidenceScore: null,
+        countryCode: "N/A",
+        isp: "N/A",
+        totalReports: 0,
+        isLive: false,
+        message: "AbuseIPDB API key not configured. Add ABUSEIPDB_API_KEY to your .env file for live IP reputation checks.",
+      });
+      return;
+    }
+    try {
+      const result = await checkIPReputation(ip, apiKey);
+      if (result) {
+        res.json(result);
+      } else {
+        res.status(502).json({ error: "Failed to check IP reputation" });
+      }
+    } catch (err) {
+      res.status(500).json({ error: "IP check failed" });
+    }
+  });
+
+  // Feed status endpoint
+  app.get("/api/feeds/status", (_req, res) => {
+    res.json(getFeedStatus());
   });
 
   // Incidents
@@ -360,10 +414,23 @@ export function registerRoutes(server: Server, app: Express) {
     }
   });
 
-  // News
-  app.get("/api/news", (req, res) => {
+  // News — Live from RSS feeds + seed data fallback
+  app.get("/api/news", async (req, res) => {
     const limit = req.query.limit ? parseInt(req.query.limit as string) : 20;
-    res.json(storage.getNewsArticles(limit));
+    try {
+      const liveNews = await fetchLiveNews();
+      if (liveNews.length > 0) {
+        // Return live news, supplemented with seed data
+        const seedNews = storage.getNewsArticles(limit).map((n: any) => ({ ...n, isLive: false }));
+        const combined = [...liveNews, ...seedNews].slice(0, limit);
+        res.json(combined);
+        return;
+      }
+    } catch (err) {
+      console.error("Live news fetch failed, falling back to seed data:", err);
+    }
+    // Fallback to seed data
+    res.json(storage.getNewsArticles(limit).map((n: any) => ({ ...n, isLive: false })));
   });
 
   // Users
